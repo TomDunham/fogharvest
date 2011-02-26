@@ -332,7 +332,7 @@ def argparser():
         help="log file",
         type=argparse.FileType(mode='a'))
     parser.add_argument(
-        '--dry-run',
+        '-n', '--dry-run',
         action="store_true",
         default = False,
         help = "Don't post data to Harvest")
