@@ -2,7 +2,7 @@
 """
 Forward time logged against tickets in FogBugz to Harvest.
 """
-
+import sys
 import urllib, urlparse, urllib2
 import datetime
 import xml.etree.ElementTree as ET
@@ -39,11 +39,33 @@ def boolstr(bs):
     return bs.lower == u"true"
 
 class Storage(object):
+    """
+    Mutable bag of values, can access by key or attrib.
+
+    >>> s = Storage({"a": 1})
+    >>> s.a
+    1
+    >>> s["a"]
+    1
+    """
     def __init__(self, mapping):
         self.__dict__.update(mapping)
 
     def __repr__(self):
         return "Storage(%r)" % self.__dict__
+
+    def get(self, k, default=None):
+        try:
+            return self[k]
+        except KeyError:
+            return default
+
+    def __getitem__(self, k):
+        return self.__dict__[k]
+
+    def __setitem__(self, k, v):
+        self.__dict__[k] = v
+
 
 ## Handle xml from APIs in a <tag>value</tag> form.
 # Eg:
@@ -154,8 +176,11 @@ class FB(API):
                       cols = "ixBug,ixProject,sProject"),
             "case", self.Case)
 
+def idx(l, key="id"):
+    "Index - a dict of items in list keyed by id"
+    return { getattr(i, key) : i for i in l }
+
 def join(fb, harvest):
-    idx = lambda l: { i.id : i for i in l }
     intervals = fb.intervals()
     person_idx = idx(fb.people())
     cases_idx = idx(fb.cases([i.bug_id for i in intervals]))
@@ -169,8 +194,11 @@ def join(fb, harvest):
             row.update(projects_idx[row["project_name"]]._asdict())
             yield Storage(row)
         except KeyError, err:
-            logging.debug("Missing key", exc_info=True)
-
+            tb = sys.exc_info()[2]
+            try:
+                logging.debug("Dropping interval - missing key %r (line %d)", err.args[0], tb.tb_lineno)
+            finally:
+                del tb
 
 def hours(i):
     "Hours in an interval"
@@ -304,9 +332,11 @@ class Harvest(API):
                 logging.debug("No task starting 'Development' found in %r", project_name)
         return acc
 
-    def add_daily(self, data):
+    def add_daily(self, data, of_user=None):
         "Post a time interval"
         url = urlparse.urljoin(self.api_url, "/daily/add")
+        if of_user:
+            url = url + "?" + urllib.urlencode({"of_user" : of_user})
         return self.parse_resp(self.open(url, data), "day_entry", self.DayEntry)
 
     def projects(self):
@@ -325,14 +355,17 @@ def argparser():
             setattr(namespace, "verbosity", logging.DEBUG)
             setattr(namespace, "logfile", sys.stderr)
             setattr(namespace, "debug", True)
+            setattr(namespace, "logformat", "%(name)s %(levelname)s:%(message)s")
 
     parser = argparse.ArgumentParser(description="")
     parser.add_argument(
         '--config',
+        nargs="?",
         default="fogharvest.cfg",
         help='config file')
     parser.add_argument(
         '--logfile',
+        nargs="?",
         default="fogharvest.log",
         help="log file",
         type=argparse.FileType(mode='a'))
@@ -348,6 +381,7 @@ def argparser():
     group.add_argument(
         '-v', '--verbosity', default=logging.WARN, choices="DEBUG INFO WARNING ERROR CRITICAL".split())
     group.add_argument('--debug', action=Debug, nargs=0)
+    parser.set_defaults(logformat="%(asctime)s %(name)s %(levelname)s:%(message)s")
     return parser
 
 
@@ -356,7 +390,8 @@ def main(argv=None):
         argv = sys.argv
     parser = argparser()
     args = parser.parse_args(argv[1:])
-    logging.basicConfig(level=args.verbosity, stream=args.logfile)
+    logging.basicConfig(level=args.verbosity, stream=args.logfile,
+                        format=args.logformat)
 
     logger.debug("Reading config from %s", args.config)
     cfgparser = RawConfigParser()
@@ -365,6 +400,7 @@ def main(argv=None):
     fb = FB(**dict(cfgparser.items("fogbugz")))
     harvest = Harvest(**dict(cfgparser.items("harvest")))
 
+    logging.info("Starting run")
     records = list(join(fb, harvest))
     logging.info("start with %d intervals", len(records))
     if args.user:
@@ -377,12 +413,28 @@ def main(argv=None):
         records = [r for r in records if r.start < args.end]
         logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
 
+    # if we have records for more than one person, we will need to use
+    # admin-only endpoints in the Harvest API to submit time for
+    # accounts other than the one in the cfg file
+    if set(r.email for r in records) != set([cfgparser.get("harvest", "email")]):
+        people = idx(harvest.people(), key="email")
+    else:
+        people = {}
+
+    for rec in records:
+        try:
+            rec["harvest_user_id"] = people.get(rec.email).id
+        except KeyError:
+            logger.warn("User %r in FB but not in Harvest - dropping record", rec.email)
+
     logging.info("Processing %d records", len(records))
     for rec in records:
-        logger.info("rec bug=%s title=%s email=%s", rec.bug_id, rec.title, rec.email)
+        logger.info("submitting for %s bug=%d title=%s", rec.email, rec.bug_id, rec.title)
         if not args.dry_run:
-            resp = harvest.add_daily(ET.tostring(harvest_timesheet(rec)))
-            logger.debug(resp)
+            # harvest_user_id==None the api will assume we're refurring to the connected user
+            resp = harvest.add_daily(ET.tostring(harvest_timesheet(rec)), rec.get("harvest_user_id"))
+            logger.debug("sucess: %r", resp)
+    logging.info("Ending run")
 
     return 0
 
