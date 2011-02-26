@@ -14,6 +14,9 @@ from collections import namedtuple
 from StringIO import StringIO
 from itertools import groupby
 
+__version__ = "0.1"
+
+
 logger = logging.getLogger("main")
 logger.addHandler(logging.NullHandler())
 
@@ -319,7 +322,7 @@ def argparser():
             setattr(namespace, "debug", True)
             setattr(namespace, "logformat", "%(name)s %(levelname)s:%(message)s")
 
-    parser = argparse.ArgumentParser(description="")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--config',
         nargs="?",
@@ -336,24 +339,25 @@ def argparser():
         '-n', '--dry-run',
         action="store_true",
         default = False,
-        help = "Don't post data to Harvest")
+        help = "don't post data to Harvest")
     parser.add_argument('--user', help="limit processing to a single user (email address)")
     parser.add_argument(
         '--start',
         nargs="?",
-        help="date to start at (YYYY-MM-DD)",
+        help="date to post intervals from (YYYY-MM-DD)",
         default=midnight(datetime.date.today() - datetime.timedelta(days=1)),
         type=datestamp)
     parser.add_argument(
         '--end',
         nargs="?",
-        help="date to end at (YYYY-MM-DD)",
+        help="date to post intervals to (YYYY-MM-DD)",
         default=midnight(datetime.date.today()),
         type=datestamp)
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument(
         '-v', '--verbosity', default=logging.WARN, choices="DEBUG INFO WARNING ERROR CRITICAL".split())
-    group.add_argument('--debug', action=Debug, nargs=0)
+    group.add_argument('--debug', action=Debug, nargs=0, help="print lots of info to the console")
+    parser.add_argument('--version', action='version', version='%(prog)s ' + "%s" % __version__)
     parser.set_defaults(logformat="%(asctime)s %(name)s %(levelname)s:%(message)s")
     return parser
 
