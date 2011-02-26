@@ -151,10 +151,13 @@ class FB(API):
     def call(self, cmd, **args):
         return self.open(self.cmd_url(cmd, **args))
 
-    def intervals(self):
+    def intervals(self, start=None):
         self.logon_if_required()
+        args = {}
+        if start:
+            args = { "dtStart" : start.strftime("%Y-%m-%dT%H:%M:%SZ") }
         return self.parse_resp(
-            self.call("listIntervals", ixPerson = 1),
+            self.call("listIntervals", ixPerson = 1, **args),
             "interval", self.Interval)
 
     def people(self):
@@ -262,8 +265,8 @@ def idx(l, key="id"):
     return { getattr(i, key) : i for i in l }
 
 
-def join(fb, harvest):
-    intervals = fb.intervals()
+def join(fb, harvest, start=None):
+    intervals = fb.intervals(start)
     person_idx = idx(fb.people())
     cases_idx = idx(fb.cases([i.bug_id for i in intervals]))
     projects_idx = { i.project_name : i for i in harvest.daily_dev_tasks(datetime.date.today()) }
@@ -370,7 +373,7 @@ def main(argv=None):
     harvest = Harvest(**dict(cfgparser.items("harvest")))
 
     logging.info("Starting run start=%s, end=%s", args.start.strftime("%c"), args.end.strftime("%c"))
-    records = list(join(fb, harvest))
+    records = list(join(fb, harvest, start=args.start))
     logging.info("start with %d intervals", len(records))
     if args.user:
         records = [r for r in records if r.email == args.user]
