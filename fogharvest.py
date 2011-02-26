@@ -324,7 +324,8 @@ def argparser():
         '--config',
         nargs="?",
         default="fogharvest.cfg",
-        help='config file')
+        help='config file',
+        type=argparse.FileType(mode="rb"))
     parser.add_argument(
         '--logfile',
         nargs="?",
@@ -360,56 +361,71 @@ def argparser():
 def main(argv=None):
     if not argv:
         argv = sys.argv
-    parser = argparser()
-    args = parser.parse_args(argv[1:])
-    logging.basicConfig(level=args.verbosity, stream=args.logfile,
-                        format=args.logformat)
 
-    logger.debug("Reading config from %s", args.config)
-    cfgparser = RawConfigParser()
-    cfgparser.read(args.config)
+    try:
+        parser = argparser()
+        args = parser.parse_args(argv[1:])
+    except Exception, err:
+        print >>sys.stderr, err
+        print >>sys.stderr, "Cannot parse arguments"
+        print >>sys.stderr, "For help use --help"
+        return 2
 
-    fb = FB(**dict(cfgparser.items("fogbugz")))
-    harvest = Harvest(**dict(cfgparser.items("harvest")))
+    try:
+        logging.basicConfig(level=args.verbosity, stream=args.logfile,
+                            format=args.logformat)
 
-    logging.info("Starting run start=%s, end=%s", args.start.strftime("%c"), args.end.strftime("%c"))
-    records = list(join(fb, harvest, start=args.start))
-    logging.info("start with %d intervals", len(records))
-    if args.user:
-        records = [r for r in records if r.email == args.user]
-        logging.info("%d intervals after user filter (%s)", len(records), args.user)
+        logger.debug("Reading config from %s", args.config)
+        cfgparser = RawConfigParser()
+        cfgparser.readfp(args.config)
 
-    records = [r for r in records if r.start >= args.start]
-    logging.info("%d intervals after start filter (%s)", len(records), args.start.strftime("%c"))
-    records = [r for r in records if r.start < args.end]
-    logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
+        fb = FB(**dict(cfgparser.items("fogbugz")))
+        harvest = Harvest(**dict(cfgparser.items("harvest")))
 
-    # if we have records for more than one person, use
-    # admin-only endpoints in the Harvest API to submit time for
-    # accounts other than the one in the cfg file
-    if set(r.email for r in records) != set([cfgparser.get("harvest", "email")]):
-        people = idx(harvest.people(), key="email")
+        logging.info("Starting run start=%s, end=%s", args.start.strftime("%c"), args.end.strftime("%c"))
+        records = list(join(fb, harvest, start=args.start))
+        logging.info("start with %d intervals", len(records))
+        if args.user:
+            records = [r for r in records if r.email == args.user]
+            logging.info("%d intervals after user filter (%s)", len(records), args.user)
+
+        records = [r for r in records if r.start >= args.start]
+        logging.info("%d intervals after start filter (%s)", len(records), args.start.strftime("%c"))
+        records = [r for r in records if r.start < args.end]
+        logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
+
+        # if we have records for more than one person, use
+        # admin-only endpoints in the Harvest API to submit time for
+        # accounts other than the one in the cfg file
+        if set(r.email for r in records) != set([cfgparser.get("harvest", "email")]):
+            people = idx(harvest.people(), key="email")
+            for rec in records:
+                try:
+                    rec["harvest_user_id"] = people[rec.email].id
+                except KeyError:
+                    logger.warn("User %r in FB but not in Harvest - dropping record", rec.email)
+
+        logging.info("Processing %d records", len(records))
         for rec in records:
-            try:
-                rec["harvest_user_id"] = people[rec.email].id
-            except KeyError:
-                logger.warn("User %r in FB but not in Harvest - dropping record", rec.email)
+            # submitting a dayentry to Harvest with hours=0 starts a timer.
+            if hours(rec) == 0:
+                logger.info("Dropping empty interval (email=%s, bug_id=%s)", rec.email, rec.bug_id)
+                continue
+            logger.info("submitting %s  %s  (%d) %s",
+                        rec.email, rec.start.date().strftime("%d %b %Y"), rec.bug_id, rec.title)
+            if not args.dry_run:
+                # harvest_user_id==None the api will assume we're refurring to the connected user
+                resp = harvest.add_daily(ET.tostring(harvest_timesheet(rec)), rec.get("harvest_user_id"))
+                logger.info("success: %r", resp)
 
-    logging.info("Processing %d records", len(records))
-    for rec in records:
-        # submitting a dayentry to Harvest with hours=0 starts a timer.
-        if hours(rec) == 0:
-            logger.info("Dropping empty interval (email=%s, bug_id=%s)", rec.email, rec.bug_id)
-            continue
-        logger.info("submitting %s  %s  (%d) %s",
-                    rec.email, rec.start.date().strftime("%d %b %Y"), rec.bug_id, rec.title)
-        if not args.dry_run:
-            # harvest_user_id==None the api will assume we're refurring to the connected user
-            resp = harvest.add_daily(ET.tostring(harvest_timesheet(rec)), rec.get("harvest_user_id"))
-            logger.info("success: %r", resp)
+        logging.info("Ending run")
+        return 0
+    except Exception, err:
+        logger.exception("Terminating on exception")
+        print >>sys.stderr, "Error encountered (check log for more details)"
+        print >>sys.stderr, err
+        return 2
 
-    logging.info("Ending run")
-    return 0
 
 
 if __name__ == "__main__":
