@@ -1,0 +1,9 @@
+[fogbugz]
+url = https://yourcompany.fogbugz.com
+email = fogadmin@yourcompany.com
+password = secret
+
+[harvest]
+url = https://yourco.harvestapp.com/
+email = harvester@yourco.com
+password = really_secret
