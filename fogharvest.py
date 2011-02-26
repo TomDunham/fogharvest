@@ -2,6 +2,7 @@
 """
 Forward time logged against tickets in FogBugz to Harvest.
 """
+import argparse
 import sys
 import urllib, urlparse, urllib2
 import datetime
@@ -11,7 +12,6 @@ from ConfigParser import RawConfigParser
 from base64 import b64encode
 from collections import namedtuple
 from StringIO import StringIO
-from operator import attrgetter
 from itertools import groupby
 
 logger = logging.getLogger("main")
@@ -176,98 +176,6 @@ class FB(API):
                       cols = "ixBug,ixProject,sProject"),
             "case", self.Case)
 
-def idx(l, key="id"):
-    "Index - a dict of items in list keyed by id"
-    return { getattr(i, key) : i for i in l }
-
-def join(fb, harvest):
-    intervals = fb.intervals()
-    person_idx = idx(fb.people())
-    cases_idx = idx(fb.cases([i.bug_id for i in intervals]))
-    projects_idx = { i.project_name : i for i in harvest.daily_dev_tasks(datetime.date.today()) }
-
-    for interval in intervals:
-        row = interval._asdict()
-        try:
-            row.update(person_idx[interval.person_id]._asdict())
-            row.update(cases_idx[interval.bug_id]._asdict())
-            row.update(projects_idx[row["project_name"]]._asdict())
-            yield Storage(row)
-        except KeyError, err:
-            tb = sys.exc_info()[2]
-            try:
-                logging.debug("Dropping interval - missing key %r (line %d)", err.args[0], tb.tb_lineno)
-            finally:
-                del tb
-
-def hours(i):
-    "Hours in an interval"
-    return ((i.end - i.start).seconds / 60.0 / 60)
-
-def html_timesheets(itr):
-    from html import HTML
-    h = HTML()
-    for day, dintervals in sgroup(itr, key=lambda i: i.start.date()):
-        h.h1(day.strftime("%d %b %Y"))
-        for person, pintervals in sgroup(dintervals, key=attrgetter("email")):
-            h.h2(person)
-            for project, intervals in sgroup(pintervals, key=lambda i: i.project_name):
-                h.h3(project)
-                with h.table:
-                    htotal = 0
-                    for bug_title, gintervals in sgroup(intervals, key=lambda i: i.title):
-                        gintervals = list(gintervals)
-                        with h.tr:
-                            h.td(bug_title)
-                            h.td("%4.2f" % sum(hours(i) for i in gintervals))
-                        htotal += sum(hours(i) for i in gintervals)
-                    with h.tr:
-                        h.td("total")
-                        h.td("%4.2f" % htotal)
-    return str(h)
-
-
-def harvest_timesheets(itr):
-    def notes(timeslices):
-        return "\n".join("%s (%4.2f h)" % (case, sum(hours(i) for i in intervals))
-                         for case, intervals in timeslices.items())
-
-    def timesheets(itr):
-        for day, dintervals in sgroup(itr, key=lambda i: i.start.date()):
-            for person, pintervals in sgroup(dintervals, key=attrgetter("email")):
-                for project, intervals in sgroup(pintervals, key=lambda i: i.project_name):
-                    for interval in intervals:
-                        yield day, person, project, interval
-
-    for day, person, project, interval in timesheets(itr):
-        request = ET.Element("request")
-        rnotes = ET.SubElement(request, "notes")
-        rnotes.text = u"(%s) %s" % (interval.bug_id, interval.title)
-        rspent_at = ET.SubElement(request, "spent_at", attrib = {"type":"date"})
-        rspent_at.text = day.strftime("%d %b, %Y")
-        rhours = ET.SubElement(request, "hours")
-        rhours.text= "%4.2f" % hours(interval)
-        rtask = ET.SubElement(request, "task_id", attrib = {"type":"integer"})
-        rtask.text = interval.task_id
-        rproject = ET.SubElement(request, "project_id", attrib = {"type":"integer"})
-        rproject.text = interval.project_id
-        yield request
-
-def harvest_timesheet(interval):
-    request = ET.Element("request")
-    rnotes = ET.SubElement(request, "notes")
-    rnotes.text = u"(%s) %s" % (interval.bug_id, interval.title)
-    rspent_at = ET.SubElement(request, "spent_at", attrib = {"type":"date"})
-    rspent_at.text = interval.start.strftime("%d %b, %Y")
-    rhours = ET.SubElement(request, "hours")
-    rhours.text= "%4.2f" % hours(interval)
-    rtask = ET.SubElement(request, "task_id", attrib = {"type":"integer"})
-    rtask.text = interval.task_id
-    rproject = ET.SubElement(request, "project_id", attrib = {"type":"integer"})
-    rproject.text = interval.project_id
-    return request
-
-
 
 class Harvest(API):
     "The Harvest API"
@@ -292,7 +200,7 @@ class Harvest(API):
 
     DevTask = namedtuple("DevTask", "project_id project_name task_id task_name")
 
-    def __init__(self,url,email,password):
+    def __init__(self, url, email, password):
         super(Harvest, self).__init__()
         self.api_url = url
         self.email = email
@@ -347,9 +255,60 @@ class Harvest(API):
         url = urlparse.urljoin(self.api_url, "/people")
         return self.parse_resp(self.open(url), "user", self.User)
 
+
+
+def idx(l, key="id"):
+    "Index - a dict of items in list keyed by id"
+    return { getattr(i, key) : i for i in l }
+
+
+def join(fb, harvest):
+    intervals = fb.intervals()
+    person_idx = idx(fb.people())
+    cases_idx = idx(fb.cases([i.bug_id for i in intervals]))
+    projects_idx = { i.project_name : i for i in harvest.daily_dev_tasks(datetime.date.today()) }
+
+    for interval in intervals:
+        row = interval._asdict()
+        try:
+            row.update(person_idx[interval.person_id]._asdict())
+            row.update(cases_idx[interval.bug_id]._asdict())
+            row.update(projects_idx[row["project_name"]]._asdict())
+            yield Storage(row)
+        except KeyError, err:
+            tb = sys.exc_info()[2]
+            try:
+                logging.debug("Dropping interval - missing key %r (line %d)", err.args[0], tb.tb_lineno)
+            finally:
+                del tb
+
+def hours(i):
+    "Hours in an interval"
+    return ((i.end - i.start).seconds / 60.0 / 60)
+
+
+# see http://www.getharvest.com/api/time-tracking#create-entry
+def harvest_timesheet(rec):
+    "Harvest time entry"
+    request = ET.Element("request")
+    rnotes = ET.SubElement(request, "notes")
+    rnotes.text = u"(%s) %s" % (rec.bug_id, rec.title)
+    rspent_at = ET.SubElement(request, "spent_at", attrib = {"type":"date"})
+    rspent_at.text = rec.start.strftime("%d %b, %Y")
+    rhours = ET.SubElement(request, "hours")
+    rhours.text= "%4.2f" % hours(rec)
+    rtask = ET.SubElement(request, "task_id", attrib = {"type":"integer"})
+    rtask.text = rec.task_id
+    rproject = ET.SubElement(request, "project_id", attrib = {"type":"integer"})
+    rproject.text = rec.project_id
+    return request
+
+
+
 ## command-line handling
 def argparser():
-    import argparse
+    midnight = lambda date: datetime.datetime.combine(date, datetime.time.min)
+
     class Debug(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             setattr(namespace, "verbosity", logging.DEBUG)
@@ -375,8 +334,18 @@ def argparser():
         default = False,
         help = "Don't post data to Harvest")
     parser.add_argument('--user', help="limit processing to a single user (email address)")
-    parser.add_argument('--start', help="date to start at (YYYY-MM-DD)", type=datestamp)
-    parser.add_argument('--end', help="date to end at (YYYY-MM-DD)", type=datestamp)
+    parser.add_argument(
+        '--start',
+        nargs="?",
+        help="date to start at (YYYY-MM-DD)",
+        default=midnight(datetime.date.today() - datetime.timedelta(days=1)),
+        type=datestamp)
+    parser.add_argument(
+        '--end',
+        nargs="?",
+        help="date to end at (YYYY-MM-DD)",
+        default=midnight(datetime.date.today()),
+        type=datestamp)
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument(
         '-v', '--verbosity', default=logging.WARN, choices="DEBUG INFO WARNING ERROR CRITICAL".split())
@@ -400,42 +369,43 @@ def main(argv=None):
     fb = FB(**dict(cfgparser.items("fogbugz")))
     harvest = Harvest(**dict(cfgparser.items("harvest")))
 
-    logging.info("Starting run")
+    logging.info("Starting run start=%s, end=%s", args.start.strftime("%c"), args.end.strftime("%c"))
     records = list(join(fb, harvest))
     logging.info("start with %d intervals", len(records))
     if args.user:
         records = [r for r in records if r.email == args.user]
         logging.info("%d intervals after user filter (%s)", len(records), args.user)
-    if args.start:
-        records = [r for r in records if r.start >= args.start]
-        logging.info("%d intervals after start filter (%s)", len(records), args.start.strftime("%c"))
-    if args.end:
-        records = [r for r in records if r.start < args.end]
-        logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
 
-    # if we have records for more than one person, we will need to use
+    records = [r for r in records if r.start >= args.start]
+    logging.info("%d intervals after start filter (%s)", len(records), args.start.strftime("%c"))
+    records = [r for r in records if r.start < args.end]
+    logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
+
+    # if we have records for more than one person, use
     # admin-only endpoints in the Harvest API to submit time for
     # accounts other than the one in the cfg file
     if set(r.email for r in records) != set([cfgparser.get("harvest", "email")]):
         people = idx(harvest.people(), key="email")
-    else:
-        people = {}
-
-    for rec in records:
-        try:
-            rec["harvest_user_id"] = people.get(rec.email).id
-        except KeyError:
-            logger.warn("User %r in FB but not in Harvest - dropping record", rec.email)
+        for rec in records:
+            try:
+                rec["harvest_user_id"] = people[rec.email].id
+            except KeyError:
+                logger.warn("User %r in FB but not in Harvest - dropping record", rec.email)
 
     logging.info("Processing %d records", len(records))
     for rec in records:
-        logger.info("submitting for %s bug=%d title=%s", rec.email, rec.bug_id, rec.title)
+        # submitting a dayentry to Harvest with hours=0 starts a timer.
+        if hours(rec) == 0:
+            logger.info("Dropping empty interval (email=%s, bug_id=%s)", rec.email, rec.bug_id)
+            continue
+        logger.info("submitting %s  %s  (%d) %s",
+                    rec.email, rec.start.date().strftime("%d %b %Y"), rec.bug_id, rec.title)
         if not args.dry_run:
             # harvest_user_id==None the api will assume we're refurring to the connected user
             resp = harvest.add_daily(ET.tostring(harvest_timesheet(rec)), rec.get("harvest_user_id"))
-            logger.debug("sucess: %r", resp)
-    logging.info("Ending run")
+            logger.info("success: %r", resp)
 
+    logging.info("Ending run")
     return 0
 
 
