@@ -148,7 +148,8 @@ class FB(API):
         logger.debug("open url=%r", url)
         resp = urllib2.urlopen(url)
         resp_str = resp.read()
-        logger.debug("response (len %r)", len(resp_str))
+        logger.debug(resp_str)
+        logger.info("response (len %r)", len(resp_str))
         return StringIO(resp_str)
 
     def call(self, cmd, **args):
