@@ -215,6 +215,7 @@ class Harvest(API):
 
     def open(self, url, data=None):
         logger.debug("request url=%s", url)
+        logger.debug("request data=%r", data)
         headers={
             'Authorization':'Basic '+b64encode('%s:%s' % (self.email, self.password)),
             'Accept':'application/xml',
@@ -222,7 +223,20 @@ class Harvest(API):
             'User-Agent':'fogharvest.py',
         }
         request = urllib2.Request(url=url, headers=headers, data=data)
-        ret = urllib2.urlopen(request).read()
+        try:
+            ret = urllib2.urlopen(request).read()
+        except urllib2.URLError, err:
+            if hasattr(err, 'reason'):
+                logger.error("Failed to contact Harvest server at url=%r", url)
+                logger.error("Reason: %s", err.reason)
+            elif hasattr(err, 'code'):
+                logger.error("Harvest server replied with status %s (msg=%r) for request url=%s", err.code, err.msg, url)
+                try:
+                    logger.error("Response from harvest: %s", err.read())
+                except Exception:
+                    logger.exception("Exception attempting to read response from Harvest")
+            raise err
+
         logger.debug("response %s", ret)
         return StringIO(ret)
 
