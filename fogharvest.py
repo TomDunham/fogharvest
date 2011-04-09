@@ -358,6 +358,7 @@ def argparser():
         default = False,
         help = "don't post data to Harvest")
     parser.add_argument('--user', help="limit processing to a single user (email address)")
+    parser.add_argument('--proj', help="limit processing to a single project")
     parser.add_argument(
         '--start',
         nargs="?",
@@ -410,12 +411,21 @@ def main(argv=None):
             records = [r for r in records if r.email == args.user]
             logging.info("%d intervals after user filter (%s)", len(records), args.user)
 
+        if args.proj:
+            records = [r for r in records if r.project_name == args.proj]
+            logging.info("%d intervals after proj filter (%s)", len(records), args.proj)
+
         records = [r for r in records if r.start >= args.start]
         logging.info("%d intervals after start filter (%s)", len(records), args.start.strftime("%c"))
         records = [r for r in records if r.start < args.end]
         logging.info("%d intervals after end filter (%s)", len(records),  args.end.strftime("%c"))
 
-        # if we have records for more than one person, use
+        if len(records) == 0:
+            logging.warn("No records to process after applying filters")
+            return 0
+
+        # if we have records for people other than the account in the
+        # config file, assume this is a harvest admin account and use
         # admin-only endpoints in the Harvest API to submit time for
         # accounts other than the one in the cfg file
         if set(r.email for r in records) != set([cfgparser.get("harvest", "email")]):
